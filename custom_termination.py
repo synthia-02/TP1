@@ -1,7 +1,6 @@
 from functools import partial
 import gurobipy as gp
 from gurobipy import GRB
-import time
 
 
 class CallbackData:
@@ -29,7 +28,7 @@ def callback(model, where, *, cbdata):
     # Temps d'exécution courant
     current_time = model.cbGet(GRB.Callback.RUNTIME)
 
-    # Si le gap a changé de manière significative
+    # Si le MIPGap a changé de manière significative
     if abs(cbdata.last_gap - mip_gap) > epsilon_to_compare_gap:
         cbdata.last_gap_change_time = current_time  # Mettre à jour le temps
         cbdata.last_gap = mip_gap  # Mettre à jour le gap
@@ -40,7 +39,6 @@ def callback(model, where, *, cbdata):
             f"Terminating optimization after {time_from_best} seconds without significant MIPGap improvement."
         )
         model.terminate()
-
 
 
 # Charger le modèle
