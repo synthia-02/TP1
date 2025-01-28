@@ -27,45 +27,57 @@ def calculate_score(tags1, tags2):
 
 
 def create_slides(photos):
-    """Crée les diapositives valides en respectant les contraintes."""
+    """Crée des diapositives valides en respectant les contraintes."""
+    # Diapositives horizontales
     horizontal_slides = [(photo[0], photo[2]) for photo in photos if photo[1] == 'H']
+
+    # Diapositives verticales
     vertical_photos = [photo for photo in photos if photo[1] == 'V']
+    vertical_slides = []
+    
+    # Associer les photos verticales par paires
+    used_verticals = set()
+    for i, p1 in enumerate(vertical_photos):
+        if p1[0] in used_verticals:
+            continue
+        for j, p2 in enumerate(vertical_photos):
+            if i != j and p2[0] not in used_verticals:
+                # Créer une diapositive combinée
+                vertical_slides.append((p1[0], p2[0], p1[2] | p2[2]))
+                used_verticals.add(p1[0])
+                used_verticals.add(p2[0])
+                break  # Trouver une seule paire
 
-    # Regrouper les photos verticales par paires pour maximiser les tags combinés
-    vertical_pairs = []
-    if len(vertical_photos) > 1:
-        vertical_pairs = [
-            (p1[0], p2[0], p1[2] | p2[2])  # Combine les tags des deux photos
-            for p1, p2 in itertools.combinations(vertical_photos, 2)
-        ]
-
-    # Convertir les paires verticales en un format uniforme (id, tags)
-    vertical_slides = [(p1, p2, tags) for p1, p2, tags in vertical_pairs]
-
-    # Combiner les deux types de diapositives
+    # Combiner les diapositives horizontales et verticales
     return horizontal_slides + vertical_slides
 
 
-
-def create_slideshow_model(slides):
-    """Crée un modèle Gurobi pour optimiser l'ordre des slides."""
+def create_slideshow_model(slides, photos):
+    """Crée un modèle Gurobi pour optimiser l'ordre des diapositives."""
     model = Model("Slideshow")
-    model.setParam('OutputFlag', 1)  # Activer les logs
+    model.setParam('OutputFlag', 1)  # Activer les logs pour voir les détails
 
-    # Variables : chaque slide peut être utilisé une seule fois
+    # Variable binaire pour chaque slide
     slide_vars = {i: model.addVar(vtype=GRB.BINARY, name=f"slide_{i}") for i in range(len(slides))}
 
-    # Contraintes : chaque slide est utilisé au maximum une fois
-    for i in slide_vars:
-        model.addConstr(slide_vars[i] <= 1, name=f"constr_slide_{i}")
+    # Contraintes : chaque photo est utilisée au maximum une fois
+    photo_used = {photo[0]: [] for photo in photos}
+    for i, slide in enumerate(slides):
+        if len(slide) == 2:  # Diapositive horizontale
+            photo_used[slide[0]].append(slide_vars[i])
+        elif len(slide) == 3:  # Diapositive verticale
+            photo_used[slide[0]].append(slide_vars[i])
+            photo_used[slide[1]].append(slide_vars[i])
+
+    for photo_id, vars_list in photo_used.items():
+        model.addConstr(quicksum(vars_list) <= 1, name=f"photo_{photo_id}_used_once")
 
     # Objectif : maximiser le score total des transitions
     slide_pairs = list(itertools.combinations(range(len(slides)), 2))
     transitions = {}
-
     for i, j in slide_pairs:
-        tags_i = slides[i][1] if len(slides[i]) == 2 else slides[i][2]  # Tags de la diapositive i
-        tags_j = slides[j][1] if len(slides[j]) == 2 else slides[j][2]  # Tags de la diapositive j
+        tags_i = slides[i][1] if len(slides[i]) == 2 else slides[i][2]
+        tags_j = slides[j][1] if len(slides[j]) == 2 else slides[j][2]
         transitions[(i, j)] = calculate_score(tags_i, tags_j)
 
     model.setObjective(
@@ -104,10 +116,18 @@ def main():
 
     input_path = sys.argv[1]
     output_path = os.path.join(os.getcwd(), "slideshow.sol")
+    
+    # Charger les données
     photos = load_photos(input_path)
+    
+    # Créer les diapositives
     slides = create_slides(photos)
-    model, slide_vars = create_slideshow_model(slides)
+    
+    # Créer et résoudre le modèle Gurobi
+    model, slide_vars = create_slideshow_model(slides, photos)
     solution = generate_solution(model, slide_vars)
+    
+    # Sauvegarder la solution
     save_solution(solution, slides, output_path)
     print(f"Solution sauvegardée dans {output_path}")
 
