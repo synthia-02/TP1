@@ -3,7 +3,6 @@ from gurobipy import Model, GRB, quicksum
 import itertools
 import os
 
-
 def load_photos(file_path):
     """Charge les photos à partir d'un fichier de dataset."""
     with open(file_path, 'r') as f:
@@ -17,7 +16,6 @@ def load_photos(file_path):
         photos.append((i, orientation, tags))
     return photos
 
-
 def calculate_score(tags1, tags2):
     """Calcule le score entre deux ensembles de tags."""
     common_tags = len(tags1 & tags2)
@@ -25,112 +23,89 @@ def calculate_score(tags1, tags2):
     unique_in_2 = len(tags2 - tags1)
     return min(common_tags, unique_in_1, unique_in_2)
 
-
-def create_slides(photos):
-    """Crée des diapositives valides en respectant les contraintes."""
-    # Diapositives horizontales
-    horizontal_slides = [(photo[0], photo[2]) for photo in photos if photo[1] == 'H']
-
-    # Diapositives verticales
-    vertical_photos = [photo for photo in photos if photo[1] == 'V']
-    vertical_slides = []
-    
-    # Associer les photos verticales par paires
-    used_verticals = set()
-    for i, p1 in enumerate(vertical_photos):
-        if p1[0] in used_verticals:
-            continue
-        for j, p2 in enumerate(vertical_photos):
-            if i != j and p2[0] not in used_verticals:
-                # Créer une diapositive combinée
-                vertical_slides.append((p1[0], p2[0], p1[2] | p2[2]))
-                used_verticals.add(p1[0])
-                used_verticals.add(p2[0])
-                break  # Trouver une seule paire
-
-    # Combiner les diapositives horizontales et verticales
-    return horizontal_slides + vertical_slides
-
-
-def create_slideshow_model(slides, photos):
-    """Crée un modèle Gurobi pour optimiser l'ordre des diapositives."""
-    model = Model("Slideshow")
-    model.setParam('OutputFlag', 1)  # Activer les logs pour voir les détails
-
-    # Variable binaire pour chaque slide
-    slide_vars = {i: model.addVar(vtype=GRB.BINARY, name=f"slide_{i}") for i in range(len(slides))}
-
-    # Contraintes : chaque photo est utilisée au maximum une fois
-    photo_used = {photo[0]: [] for photo in photos}
-    for i, slide in enumerate(slides):
-        if len(slide) == 2:  # Diapositive horizontale
-            photo_used[slide[0]].append(slide_vars[i])
-        elif len(slide) == 3:  # Diapositive verticale
-            photo_used[slide[0]].append(slide_vars[i])
-            photo_used[slide[1]].append(slide_vars[i])
-
-    for photo_id, vars_list in photo_used.items():
-        model.addConstr(quicksum(vars_list) <= 1, name=f"photo_{photo_id}_used_once")
-
-    # Objectif : maximiser le score total des transitions
-    slide_pairs = list(itertools.combinations(range(len(slides)), 2))
-    transitions = {}
-    for i, j in slide_pairs:
-        tags_i = slides[i][1] if len(slides[i]) == 2 else slides[i][2]
-        tags_j = slides[j][1] if len(slides[j]) == 2 else slides[j][2]
-        transitions[(i, j)] = calculate_score(tags_i, tags_j)
-
-    model.setObjective(
-        quicksum(transitions[i, j] * slide_vars[i] * slide_vars[j] for i, j in transitions.keys()),
-        GRB.MAXIMIZE,
-    )
-
-    return model, slide_vars
-
-
-def save_solution(solution, slides, output_path):
-    """Sauvegarde la solution dans un fichier .sol."""
+def save_solution(solution, output_path):
+    """Sauvegarde la solution au format requis."""
     with open(output_path, 'w') as f:
         f.write(f"{len(solution)}\n")
         for slide in solution:
-            if len(slides[slide]) == 2:
-                f.write(f"{slides[slide][0]}\n")
-            elif len(slides[slide]) == 3:
-                f.write(f"{slides[slide][0]} {slides[slide][1]}\n")
+            f.write(" ".join(map(str, slide)) + "\n")
+
+def compute_final_score(solution, photos):
+    """Recalcule le score total de la solution extraite."""
+    score = 0
+    for i in range(len(solution) - 1):
+        tags1 = (photos[solution[i][0]][2] | photos[solution[i][1]][2]) if len(solution[i]) == 2 else photos[solution[i][0]][2]
+        tags2 = (photos[solution[i + 1][0]][2] | photos[solution[i + 1][1]][2]) if len(solution[i + 1]) == 2 else photos[solution[i + 1][0]][2]
+        score += calculate_score(tags1, tags2)
+    return score
+
+def extract_solution(model, horizontal_slides, vertical_pairs, order, photos):
+    """Extrait la solution du modèle Gurobi."""
+    slides = []
+    
+    # Ajouter les diapositives horizontales sélectionnées
+    for i in horizontal_slides:
+        if horizontal_slides[i].x > 0.5:
+            slides.append([i])
+
+    # Ajouter les paires de diapositives verticales sélectionnées
+    for (i, j) in vertical_pairs:
+        if vertical_pairs[i, j].x > 0.5:
+            slides.append([i, j])
+    
+    print(f"Slides générées : {slides}")
+    return slides
+
+def create_slideshow_model(photos):
+    """Crée et résout un modèle d'optimisation Gurobi."""
+    model = Model("Slideshow")
+    
+    # Variables
+    horizontal_slides = {i: model.addVar(vtype=GRB.BINARY, name=f"H_{i}") for i, p in enumerate(photos) if p[1] == 'H'}
+    vertical_pairs = {(i, j): model.addVar(vtype=GRB.BINARY, name=f"V_{i}_{j}")
+                      for i, j in itertools.combinations([p[0] for p in photos if p[1] == 'V'], 2)}
+    
+    all_slides = list(horizontal_slides.keys()) + list(vertical_pairs.keys())
+    order = {(s1, s2): model.addVar(vtype=GRB.BINARY, name=f"order_{s1}_{s2}") for s1, s2 in itertools.permutations(all_slides, 2)}
+    
+    # Contraintes : chaque photo ne peut apparaître qu'une seule fois
+    for p in range(len(photos)):
+        model.addConstr(
+            quicksum(horizontal_slides[i] for i in horizontal_slides if i == p) +
+            quicksum(vertical_pairs[i, j] for (i, j) in vertical_pairs if i == p or j == p) <= 1,
+            f"photo_used_{p}"
+        )
+    
+    # Assurer qu’au moins trois diapositives sont utilisées
+    model.addConstr(quicksum(horizontal_slides.values()) + quicksum(vertical_pairs.values()) >= len(photos) // 2, "min_slides")
+
+    # Objectif : maximiser le score des transitions avec un ordonnancement optimal
+    model.setObjective(quicksum(
+    order[(i, j)] * calculate_score(
+        (photos[i[0]][2] | photos[i[1]][2]) if isinstance(i, tuple) else photos[i][2],
+        (photos[j[0]][2] | photos[j[1]][2]) if isinstance(j, tuple) else photos[j][2]
+    ) for (i, j) in order.keys()
+), GRB.MAXIMIZE)
 
 
-def generate_solution(model, slide_vars):
-    """Optimise le modèle et génère une solution."""
     model.optimize()
-    if model.status == GRB.OPTIMAL:
-        return [i for i, var in slide_vars.items() if var.x > 0.5]
-    else:
-        print("Aucune solution optimale trouvée.")
-        return []
-
+    return model, horizontal_slides, vertical_pairs, order
 
 def main():
     if len(sys.argv) != 2:
         print("Usage: python slideshow.py [relative/path/to/dataset]")
         sys.exit(1)
-
+    
     input_path = sys.argv[1]
     output_path = os.path.join(os.getcwd(), "slideshow.sol")
     
-    # Charger les données
     photos = load_photos(input_path)
-    
-    # Créer les diapositives
-    slides = create_slides(photos)
-    
-    # Créer et résoudre le modèle Gurobi
-    model, slide_vars = create_slideshow_model(slides, photos)
-    solution = generate_solution(model, slide_vars)
-    
-    # Sauvegarder la solution
-    save_solution(solution, slides, output_path)
+    model, horizontal_slides, vertical_pairs, order = create_slideshow_model(photos)
+    solution = extract_solution(model, horizontal_slides, vertical_pairs, order, photos)
+    final_score = compute_final_score(solution, photos)
+    print(f"Score réel recalculé après optimisation : {final_score}")
+    save_solution(solution, output_path)
     print(f"Solution sauvegardée dans {output_path}")
-
-
+    
 if __name__ == "__main__":
     main()
